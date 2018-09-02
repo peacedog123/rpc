@@ -1,0 +1,15 @@
+syntax = "proto2";
+
+package myproto;
+
+message Ping {
+  required string address = 2;
+  required int32 port = 3;
+  optional int32 id = 4;
+}
+
+message PingRes {
+  required int32 res = 1;
+  required string mess = 2;
+}
+
