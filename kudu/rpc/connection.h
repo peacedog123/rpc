@@ -204,6 +204,9 @@ class Connection : public RefCountedThreadSafe<Connection> {
   // the next call ID to use
   int32_t next_call_id_;
 
+  // Starts as Status::OK, gets set to a shutdown status upon Shutdown().
+  Status shutdown_status_;
+
   // Whether we completed connection negotiation.
   bool negotiation_complete_;
 

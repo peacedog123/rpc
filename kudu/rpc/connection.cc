@@ -97,7 +97,41 @@ bool Connection::Idle() const {
 
 void Connection::Shutdown(const Status &status,
                           unique_ptr<ErrorStatusPB> rpc_error) {
-  // TODO
+  DCHECK(reactor_thread_->IsCurrentThread());
+  shutdown_status_ = status.CloneAndPrepend("RPC connection failed");
+
+  // Clear any calls which have been sent and were awaiting a response
+  for (const car_map_t::value_type& v: awaiting_response_) {
+    CallAwaitingResponse* c = v.second;
+    if (c->call) {
+      unique_ptr<ErrorStatusPB> error;
+      if (rpc_error) {
+        error.reset(new ErrorStatusPB(*rpc_error));
+      }
+      c->call->SetFailed(status,
+                         negotiation_complete_ ? Phase::REMOTE_CALL
+                                               : Phase::CONNECTION_NEGOTIATION,
+                         std::move(error));
+    }
+    //And we must return the CallAwaitingResponse to the pool
+    car_pool_.Destroy(c);
+  }
+
+  awaiting_response_.clear();
+
+  // Clear any outbound transfers.
+  while (!outbound_transfers_.empty()) {
+    OutboundTransfer *t = &outbound_transfers_.front();
+    outbound_transfers_.pop_front();
+    delete t;
+  }
+
+  read_io_.stop();
+  write_io_.stop();
+  is_epoll_registered_ = false;
+  if (socket_) {
+    WARN_NOT_OK(socket_->Close(), "Error closing socket");
+  }
 }
 
 Connection::CallAwaitingResponse::~CallAwaitingResponse() {

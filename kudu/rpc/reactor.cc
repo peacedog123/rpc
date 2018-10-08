@@ -76,8 +76,6 @@ void Reactor::QueueOutboundCall(const std::shared_ptr<OutboundCall>& call) {
   DVLOG(3) << name_ << ": queueing outbound call "
            << call->ToString() << " to remote " << call->conn_id().remote().ToString();
 
-  // TODO cancelling
-
   ScheduleReactorTask(new AssignOutboundCallTask(call));
 }
 

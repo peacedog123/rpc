@@ -7,6 +7,7 @@
 #include "kudu/gutil/gscoped_ptr.h"
 #include "kudu/rpc/connection.h"
 #include "kudu/util/net/sockaddr.h"
+#include "kudu/util/locks.h"
 #include "kudu/util/thread_pool.h"
 
 namespace kudu {
@@ -28,6 +29,14 @@ class Messenger {
   static const uint64_t UNKNOWN_CALL_ID = 0;
 
   ~Messenger();
+
+  // Stops all communication and prevents further use. If called explicitly,
+  // also waits for outstanding tasks running on reactor threads to finish,
+  // which means it may  not be called from a reactor task.
+  //
+  // It's not required to call this -- dropping the shared_ptr provided
+  // from MessengerBuilder::Build will automatically call this method.
+  void Shutdown();
 
   // Queue a call for transmission. This will pick the appropriate reactor,
   // and enqueue a task on that reactor to assign and send the call.
@@ -63,6 +72,9 @@ class Messenger {
   const int64_t rpc_negotiation_timeout_ms_;
 
   gscoped_ptr<ThreadPool> client_negotiation_pool_;
+
+  // Protects closing_
+  mutable percpu_rwlock lock_;
 
   bool closing_;
 

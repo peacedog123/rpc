@@ -65,6 +65,10 @@ Messenger::~Messenger() {
   CHECK(closing_) << "Should have already shut down";
 }
 
+void Messenger::Shutdown() {
+  ShutdownInternal(ShutdownMode::SYNC);
+}
+
 // TODO
 void Messenger::ShutdownInternal(ShutdownMode mode) {
 
