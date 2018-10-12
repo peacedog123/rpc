@@ -11,7 +11,6 @@ set(KRPC_SRCS
     rpc_controller.cc
     rpc_sidecar.cc
     transfer.cc
-    serialization.cc
     )
 
 set(KRPC_LIBS

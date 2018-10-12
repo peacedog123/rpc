@@ -33,7 +33,6 @@
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/rpc/constants.h"
 #include "kudu/util/flag_tags.h"
-//#include "kudu/util/logging.h"
 #include "kudu/util/net/socket.h"
 
 DEFINE_int64(rpc_max_message_size, (50 * 1024 * 1024),
@@ -259,11 +258,6 @@ bool OutboundTransfer::TransferFinished() const {
 }
 
 string OutboundTransfer::HexDump() const {
-  /* TODO
-  if (KUDU_SHOULD_REDACT()) {
-    return kRedactionMessage;
-  }*/
-
   string ret;
   for (int i = 0; i < n_payload_slices_; i++) {
     ret.append(payload_slices_[i].ToDebugString());

@@ -2,8 +2,10 @@
 
 #include <glog/logging.h>
 
+#include "kudu/gutil/stl_util.h"
 #include "kudu/rpc/outbound_call.h"
 #include "kudu/rpc/reactor.h"
+#include "kudu/util/scoped_cleanup.h"
 #include "kudu/util/status.h"
 
 namespace kudu {
@@ -40,9 +42,13 @@ MessengerBuilder &MessengerBuilder::set_connection_keep_alive_time(int32_t time_
 Status MessengerBuilder::Build(std::shared_ptr<Messenger> *msgr) {
 
   Messenger* messenger(new Messenger(*this));
+  auto cleanup = MakeScopedCleanup([&] () {
+    messenger->AllExternalReferencesDropped();
+  });
   RETURN_NOT_OK(messenger->Init());
 
   // See docs on Messenger::retain_self_ for info about this odd hack.
+  cleanup.cancel();
   *msgr = shared_ptr<Messenger>(messenger, std::mem_fun(&Messenger::AllExternalReferencesDropped));
   return Status::OK();
 }
@@ -62,16 +68,35 @@ Messenger::Messenger(const MessengerBuilder& builder)
 }
 
 Messenger::~Messenger() {
+  std::lock_guard<percpu_rwlock> guard(lock_);
   CHECK(closing_) << "Should have already shut down";
+  STLDeleteElements(&reactors_);
 }
 
 void Messenger::Shutdown() {
   ShutdownInternal(ShutdownMode::SYNC);
 }
 
-// TODO
 void Messenger::ShutdownInternal(ShutdownMode mode) {
 
+  if (mode == ShutdownMode::SYNC) {
+    // TODO ThreadRestrictions::AssertWaitAllowed();
+  }
+
+  {
+    std::lock_guard<percpu_rwlock> guard(lock_);
+    if (closing_) {
+      return;
+    }
+    VLOG(1) << "shutting down messenger " << name_;
+    closing_ = true;
+  }
+
+  // TODO client_negotiation_pool_->Shutdown();
+
+  for (Reactor* reactor : reactors_) {
+    reactor->Shutdown(mode);
+  }
 }
 
 void Messenger::AllExternalReferencesDropped() {
