@@ -50,13 +50,12 @@ void Connection::EpollRegister(ev::loop_ref& loop) {
 void Connection::QueueOutbound(gscoped_ptr<OutboundTransfer> transfer) {
   DCHECK(reactor_thread_->IsCurrentThread());
 
-  /* TODO
   if (!shutdown_status_.ok()) {
     // If we've already shut down, then we just need to abort the
     // transfer rather than bothering to queue it.
     transfer->Abort(shutdown_status_);
     return;
-  }*/
+  }
 
   DVLOG(3) << "Queueing transfer: " << transfer->HexDump();
 
@@ -97,7 +96,41 @@ bool Connection::Idle() const {
 
 void Connection::Shutdown(const Status &status,
                           unique_ptr<ErrorStatusPB> rpc_error) {
-  // TODO
+  DCHECK(reactor_thread_->IsCurrentThread());
+  shutdown_status_ = status.CloneAndPrepend("RPC connection failed");
+
+  // Clear any calls which have been sent and were awaiting a response
+  for (const car_map_t::value_type& v: awaiting_response_) {
+    CallAwaitingResponse* c = v.second;
+    if (c->call) {
+      unique_ptr<ErrorStatusPB> error;
+      if (rpc_error) {
+        error.reset(new ErrorStatusPB(*rpc_error));
+      }
+      c->call->SetFailed(status,
+                         negotiation_complete_ ? Phase::REMOTE_CALL
+                                               : Phase::CONNECTION_NEGOTIATION,
+                         std::move(error));
+    }
+    //And we must return the CallAwaitingResponse to the pool
+    car_pool_.Destroy(c);
+  }
+
+  awaiting_response_.clear();
+
+  // Clear any outbound transfers.
+  while (!outbound_transfers_.empty()) {
+    OutboundTransfer *t = &outbound_transfers_.front();
+    outbound_transfers_.pop_front();
+    delete t;
+  }
+
+  read_io_.stop();
+  write_io_.stop();
+  is_epoll_registered_ = false;
+  if (socket_) {
+    WARN_NOT_OK(socket_->Close(), "Error closing socket");
+  }
 }
 
 Connection::CallAwaitingResponse::~CallAwaitingResponse() {
@@ -163,14 +196,13 @@ void Connection::QueueOutboundCall(shared_ptr<OutboundCall> call) {
   DCHECK_EQ(direction_, CLIENT);
   DCHECK(reactor_thread_->IsCurrentThread());
 
-  // TODO shutdown
-  /*if (PREDICT_FALSE(!shutdown_status_.ok())) {
+  if (PREDICT_FALSE(!shutdown_status_.ok())) {
     // Already shutdown
     call->SetFailed(shutdown_status_,
                     negotiation_complete_ ? Phase::REMOTE_CALL
                                           : Phase::CONNECTION_NEGOTIATION);
     return;
-  } */
+  }
 
   // At this point the call has a serialized request, but no call header, since we haven't
   // yet assigned a call ID.
@@ -197,7 +229,6 @@ void Connection::QueueOutboundCall(shared_ptr<OutboundCall> call) {
   car->conn = this;
   car->call = call;
 
-  // TODO deal with the timeout timer -
   // 这里用来处理定时器(有可能超时的时候还没发出去, 或者已经发出去，但是server还没返回
   const MonoDelta& timeout = call->controller()->timeout();
   if (timeout.Initialized()) {
@@ -280,10 +311,7 @@ void Connection::MarkNegotiationComplete() {
 
 // Inject a cancellation when 'call' is in state 'FLAGS_rpc_inject_cancellation_state'.
 void inline Connection::MaybeInjectCancellation(const shared_ptr<OutboundCall> &call) {
-  /* TODO
-  if (PREDICT_FALSE(call->ShouldInjectCancellation())) {
-    reactor_thread_->reactor()->messenger()->QueueCancellation(call);
-  }*/
+  // FIXME, only for debug test for cancellation
 }
 
 // libev的回调，表明socket可以写入。

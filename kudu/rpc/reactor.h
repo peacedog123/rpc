@@ -18,6 +18,7 @@
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/rpc/connection.h"
 #include "kudu/rpc/connection_id.h"
+#include "kudu/rpc/messenger.h"
 #include "kudu/util/locks.h"
 #include "kudu/util/monotime.h"
 #include "kudu/util/status.h"
@@ -51,6 +52,12 @@ class ReactorThread {
 
   // This may be called from another thread.
   Status Init();
+
+  // Shuts down a reactor thread, optionally waiting for it to exit.
+  // Reactor::Shutdown() must have been called already.
+  //
+  // If mode == SYNC, may not be called from the reactor thread itself.
+  void Shutdown(Messenger::ShutdownMode mode);
 
   // called from
   void WakeThread();
@@ -126,6 +133,9 @@ class ReactorThread {
   // Initiate a new connection on the given socket.
   static Status StartConnect(Socket *sock, const Sockaddr &remote);
 
+  // Actually perform shutdown of the thread, tearing down any connections,
+  // etc. This is called from within the thread.
+  void ShutdownInternal();
 
  private:
   // the eventloop thread
@@ -176,6 +186,10 @@ class Reactor {
           const MessengerBuilder &builder);
 
   Status Init();
+
+  // Shuts down the reactor and its corresponding thread, optionally waiting
+  // until the thread has exited.
+  void Shutdown(Messenger::ShutdownMode mode);
 
   // Schedule the given task's Run() method to be called on the
   // reactor thread.

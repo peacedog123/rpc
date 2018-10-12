@@ -19,7 +19,6 @@
 #include "kudu/rpc/transfer.h"
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/rpc/rpc_sidecar.h"
-#include "kudu/rpc/serialization.h"
 
 // 100M cycles should be about 50ms on a 2Ghz box. This should be high
 // enough that involuntary context switches don't trigger it, but low enough
@@ -379,7 +378,7 @@ CallResponse::CallResponse()
 
 Status CallResponse::ParseFrom(gscoped_ptr<InboundTransfer> transfer) {
   CHECK(!parsed_);
-  // FIXME RETURN_NOT_OK(serialization::ParseMessage(transfer->data(), &header_, &serialized_response_));
+
   Slice slice = transfer->data();
   uint32_t total_length = NetworkByteOrder::Load32(slice.data());
   uint32_t header_length = NetworkByteOrder::Load32(slice.data() + kMsgLengthPrefixLength);

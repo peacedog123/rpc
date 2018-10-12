@@ -22,7 +22,9 @@ void RpcController::SetRequestParam(const google::protobuf::Message& req) {
 }
 
 Status RpcController::status() const {
-  // TODO
+  if (call_) {
+    return call_->status();
+  }
   return Status::OK();
 }
 

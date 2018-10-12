@@ -16,6 +16,13 @@ using std::unique_ptr;
 
 namespace {
 
+Status ShutdownError(bool aborted) {
+  const char* msg = "reactor is shutting down";
+  return aborted ?
+      Status::Aborted(msg, "", ESHUTDOWN) :
+      Status::ServiceUnavailable(msg, "", ESHUTDOWN);
+}
+
 // Callback for libev fatal errors
 void LibevSysErr(const char* msg) throw() {
   PLOG(FATAL) << "LibEV fatal error: " << msg;
@@ -68,6 +75,27 @@ Status Reactor::Init() {
   return thread_.Init();
 }
 
+void Reactor::Shutdown(Messenger::ShutdownMode mode) {
+  {
+    std::lock_guard<LockType> l(lock_);
+    if (closing_) {
+      return;
+    }
+    closing_ = true;
+  }
+
+  thread_.Shutdown(mode);
+
+  // Abort all pending tasks. No new tasks can get scheduled after this
+  // because ScheduleReactorTask() tests the closing_ flag set above.
+  Status aborted = ShutdownError(true);
+  while (!pending_tasks_.empty()) {
+    ReactorTask& task = pending_tasks_.front();
+    pending_tasks_.pop_front();
+    task.Abort(aborted);
+  }
+}
+
 const std::string& Reactor::name() const {
   return name_;
 }
@@ -76,8 +104,6 @@ void Reactor::QueueOutboundCall(const std::shared_ptr<OutboundCall>& call) {
   DVLOG(3) << name_ << ": queueing outbound call "
            << call->ToString() << " to remote " << call->conn_id().remote().ToString();
 
-  // TODO cancelling
-
   ScheduleReactorTask(new AssignOutboundCallTask(call));
 }
 
@@ -85,7 +111,9 @@ void Reactor::ScheduleReactorTask(ReactorTask* reactor_task) {
   {
     std::unique_lock<LockType> l(lock_);
     if (closing_) {
-      // TODO
+      l.unlock();
+      reactor_task->Abort(ShutdownError(false));
+      return;
     }
     pending_tasks_.push_back(*reactor_task);
   }
@@ -129,9 +157,6 @@ Status ReactorThread::Init() {
   timer_.start(coarse_timer_granularity_.ToSeconds(),
                coarse_timer_granularity_.ToSeconds());
 
-  // TODO Register our other callbackes.
-
-
   thread_ptr_.reset(new std::thread(&ReactorThread::Run, this));
   return Status::OK();
 }
@@ -149,9 +174,59 @@ void ReactorThread::Run() {
   reactor_->messenger_.reset();
 }
 
+void ReactorThread::Shutdown(Messenger::ShutdownMode mode) {
+  CHECK(reactor_->closing()) << "Should be called after setting closing_ flag";
+
+  VLOG(1) << name() << ": shutting down Reactor thread.";
+  WakeThread();
+
+  if (mode == Messenger::ShutdownMode::SYNC) {
+    // Join() will return a bad status if asked to join on the currently
+    // running thread.
+    // CHECK_OK(ThreadJoiner(thread_.get()).Join());
+    thread_ptr_->join();
+  }
+}
+
 void ReactorThread::WakeThread() {
-  // TODO some log
+  // libev uses some lock-free synchronization, but doesn't have TSAN annotations.
+  // See http://lists.schmorp.de/pipermail/libev/2013q2/002178.html or KUDU-366
+  // for examples.
+  // FIXME debug::ScopedTSANIgnoreReadsAndWrites ignore_tsan;
   async_.send();
+}
+
+void ReactorThread::AsyncHandler(ev::async &watcher, int revents) {
+  DCHECK(IsCurrentThread());
+
+  if (PREDICT_FALSE(reactor_->closing())) {
+    ShutdownInternal();
+    loop_.break_loop();
+    return;
+  }
+
+  boost::intrusive::list<ReactorTask> tasks;
+  reactor_->DrainTaskQueue(&tasks);
+
+  while (!tasks.empty()) {
+    ReactorTask& task = tasks.front();
+    tasks.pop_front();
+    task.Run(this);
+  }
+}
+
+void ReactorThread::ShutdownInternal() {
+  DCHECK(IsCurrentThread());
+
+  // Tear down any outbound TCP connections.
+  Status service_unavailable = ShutdownError(false);
+  VLOG(1) << name() << ": tearing down outbound TCP connections...";
+  for (const auto& elem : client_conns_) {
+    const auto& conn = elem.second;
+    VLOG(1) << name() << ": shutting down " << conn->ToString();
+    conn->Shutdown(service_unavailable);
+  }
+  client_conns_.clear();
 }
 
 // do the real work
@@ -185,7 +260,6 @@ bool ReactorThread::FindConnection(const ConnectionId& conn_id,
   scoped_refptr<Connection> found_conn;
   for (auto it = range.first; it != range.second; ) {
     const auto& c = it->second.get();
-    // TODO deal with shutdown
     found_conn = c;
     ++it;
   }
@@ -242,7 +316,8 @@ Status ReactorThread::StartConnectionNegotiation(const scoped_refptr<Connection>
   DCHECK(IsCurrentThread());
 
   // Set a limit on how long the server will negotiate with a new client.
-  MonoTime deadline = MonoTime::Now() + MonoDelta::FromMilliseconds(reactor()->messenger()->rpc_negotiation_timeout_ms());
+  MonoTime deadline = MonoTime::Now() +
+                      MonoDelta::FromMilliseconds(reactor()->messenger()->rpc_negotiation_timeout_ms());
 
   // submit the task
   ThreadPool* pool =
@@ -317,24 +392,6 @@ void ReactorThread::DestroyConnection(Connection* conn, const Status& conn_statu
   }
 }
 
-void ReactorThread::AsyncHandler(ev::async &watcher, int revents) {
-  DCHECK(IsCurrentThread());
-
-  if (PREDICT_FALSE(reactor_->closing())) {
-    // TODO shutdown
-
-  }
-
-  boost::intrusive::list<ReactorTask> tasks;
-  reactor_->DrainTaskQueue(&tasks);
-
-  while (!tasks.empty()) {
-    ReactorTask& task = tasks.front();
-    tasks.pop_front();
-    task.Run(this);
-  }
-}
-
 //
 //// Handles timer events.  The periodic timer:
 ////
@@ -350,8 +407,6 @@ void ReactorThread::TimerHandler(ev::timer &watcher, int revents) {
     return;
   }
   cur_time_ = MonoTime::Now();
-
-  // 2. TODO - Scan Idle Connections
 }
 
 void ReactorThread::RegisterTimeout(ev::timer *watcher) {
